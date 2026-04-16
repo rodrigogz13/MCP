@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "grades": {
+      "command": "node",
+      "args": [
+        "C:\\Users\\altoz\\Documentos\\GitHub\\MCP\\mcp-server\\index.js"
+      ],
+      "env": {
+        "API_BASE": "http://localhost:3000"
+      }
+    }
+  }
+}
