@@ -1,159 +1,149 @@
-const express = require("express");
+import "dotenv/config";
+import express from "express";
+import mysql from "mysql2/promise";
 
 const app = express();
 app.use(express.json());
 
-// ── In-memory store ──────────────────────────────────────────────────────────
-let students = [
-  { id: 1, name: "Rodrigo" },
-  { id: 2, name: "Maria" },
-  { id: 3, name: "Carlos" },
-];
-
-let grades = [
-  { id: 1, studentId: 1, subject: "Math", grade: 8 },
-  { id: 2, studentId: 1, subject: "AI", grade: 7 },
-  { id: 3, studentId: 2, subject: "Math", grade: 9 },
-  { id: 4, studentId: 3, subject: "AI", grade: 6 },
-];
-
-let nextStudentId = 4;
-let nextGradeId = 5;
+// ── DB pool ──────────────────────────────────────────────────────────────────
+const pool = mysql.createPool({
+  host:     process.env.DB_HOST     ?? "localhost",
+  port:     Number(process.env.DB_PORT ?? 3306),
+  user:     process.env.DB_USER     ?? "root",
+  password: process.env.DB_PASSWORD ?? "",
+  database: process.env.DB_NAME     ?? "grades_db",
+});
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-const notFound = (res, msg) => res.status(404).json({ error: msg });
+const notFound   = (res, msg) => res.status(404).json({ error: msg });
 const badRequest = (res, msg) => res.status(400).json({ error: msg });
 
 // ── Students ─────────────────────────────────────────────────────────────────
 
 // GET /students
-app.get("/students", (req, res) => {
-  res.json(students);
+app.get("/students", async (req, res) => {
+  const [rows] = await pool.query("SELECT * FROM students");
+  res.json(rows);
 });
 
 // GET /students/:id
-app.get("/students/:id", (req, res) => {
-  const student = students.find((s) => s.id === Number(req.params.id));
-  if (!student) return notFound(res, "Student not found");
-  res.json(student);
+app.get("/students/:id", async (req, res) => {
+  const [rows] = await pool.query("SELECT * FROM students WHERE id = ?", [req.params.id]);
+  if (!rows.length) return notFound(res, "Student not found");
+  res.json(rows[0]);
 });
 
 // POST /students
-app.post("/students", (req, res) => {
+app.post("/students", async (req, res) => {
   const { name } = req.body;
   if (!name) return badRequest(res, "name is required");
-  const student = { id: nextStudentId++, name };
-  students.push(student);
-  res.status(201).json(student);
+  const [result] = await pool.query("INSERT INTO students (name) VALUES (?)", [name]);
+  res.status(201).json({ id: result.insertId, name });
 });
 
 // PUT /students/:id
-app.put("/students/:id", (req, res) => {
-  const idx = students.findIndex((s) => s.id === Number(req.params.id));
-  if (idx === -1) return notFound(res, "Student not found");
+app.put("/students/:id", async (req, res) => {
   const { name } = req.body;
   if (!name) return badRequest(res, "name is required");
-  students[idx] = { ...students[idx], name };
-  res.json(students[idx]);
+  const [result] = await pool.query("UPDATE students SET name = ? WHERE id = ?", [name, req.params.id]);
+  if (!result.affectedRows) return notFound(res, "Student not found");
+  res.json({ id: Number(req.params.id), name });
 });
 
 // DELETE /students/:id
-app.delete("/students/:id", (req, res) => {
-  const idx = students.findIndex((s) => s.id === Number(req.params.id));
-  if (idx === -1) return notFound(res, "Student not found");
-  const [removed] = students.splice(idx, 1);
-  // cascade-delete grades
-  grades = grades.filter((g) => g.studentId !== removed.id);
-  res.json({ message: "Student deleted", student: removed });
+app.delete("/students/:id", async (req, res) => {
+  const [rows] = await pool.query("SELECT * FROM students WHERE id = ?", [req.params.id]);
+  if (!rows.length) return notFound(res, "Student not found");
+  await pool.query("DELETE FROM students WHERE id = ?", [req.params.id]);
+  res.json({ message: "Student deleted", student: rows[0] });
 });
 
 // ── Grades ───────────────────────────────────────────────────────────────────
 
 // GET /grades
-app.get("/grades", (req, res) => {
-  // Join student name for convenience
-  const enriched = grades.map((g) => {
-    const student = students.find((s) => s.id === g.studentId);
-    return { ...g, studentName: student ? student.name : "Unknown" };
-  });
-  res.json(enriched);
+app.get("/grades", async (req, res) => {
+  const [rows] = await pool.query(`
+    SELECT g.*, s.name AS studentName
+    FROM grades g
+    JOIN students s ON s.id = g.student_id
+  `);
+  res.json(rows);
 });
 
 // GET /grades/:id
-app.get("/grades/:id", (req, res) => {
-  const grade = grades.find((g) => g.id === Number(req.params.id));
-  if (!grade) return notFound(res, "Grade not found");
-  const student = students.find((s) => s.id === grade.studentId);
-  res.json({ ...grade, studentName: student ? student.name : "Unknown" });
+app.get("/grades/:id", async (req, res) => {
+  const [rows] = await pool.query(`
+    SELECT g.*, s.name AS studentName
+    FROM grades g
+    JOIN students s ON s.id = g.student_id
+    WHERE g.id = ?
+  `, [req.params.id]);
+  if (!rows.length) return notFound(res, "Grade not found");
+  res.json(rows[0]);
 });
 
 // POST /grades
-app.post("/grades", (req, res) => {
+app.post("/grades", async (req, res) => {
   const { studentId, subject, grade } = req.body;
   if (!studentId || !subject || grade === undefined)
     return badRequest(res, "studentId, subject and grade are required");
-  if (!students.find((s) => s.id === Number(studentId)))
-    return notFound(res, "Student not found");
-  const newGrade = {
-    id: nextGradeId++,
-    studentId: Number(studentId),
-    subject,
-    grade: Number(grade),
-  };
-  grades.push(newGrade);
-  res.status(201).json(newGrade);
+  const [students] = await pool.query("SELECT id FROM students WHERE id = ?", [studentId]);
+  if (!students.length) return notFound(res, "Student not found");
+  const [result] = await pool.query(
+    "INSERT INTO grades (student_id, subject, grade) VALUES (?, ?, ?)",
+    [studentId, subject, grade]
+  );
+  res.status(201).json({ id: result.insertId, studentId: Number(studentId), subject, grade: Number(grade) });
 });
 
-// PUT /grades/:id  — also supports updating by studentName + subject
-app.put("/grades/:id", (req, res) => {
-  const idx = grades.findIndex((g) => g.id === Number(req.params.id));
-  if (idx === -1) return notFound(res, "Grade not found");
+// PUT /grades/:id
+app.put("/grades/:id", async (req, res) => {
   const { grade } = req.body;
   if (grade === undefined) return badRequest(res, "grade is required");
-  grades[idx] = { ...grades[idx], grade: Number(grade) };
-  res.json(grades[idx]);
+  const [result] = await pool.query("UPDATE grades SET grade = ? WHERE id = ?", [grade, req.params.id]);
+  if (!result.affectedRows) return notFound(res, "Grade not found");
+  const [rows] = await pool.query("SELECT * FROM grades WHERE id = ?", [req.params.id]);
+  res.json(rows[0]);
 });
 
 // DELETE /grades/:id
-app.delete("/grades/:id", (req, res) => {
-  const idx = grades.findIndex((g) => g.id === Number(req.params.id));
-  if (idx === -1) return notFound(res, "Grade not found");
-  const [removed] = grades.splice(idx, 1);
-  res.json({ message: "Grade deleted", grade: removed });
+app.delete("/grades/:id", async (req, res) => {
+  const [rows] = await pool.query("SELECT * FROM grades WHERE id = ?", [req.params.id]);
+  if (!rows.length) return notFound(res, "Grade not found");
+  await pool.query("DELETE FROM grades WHERE id = ?", [req.params.id]);
+  res.json({ message: "Grade deleted", grade: rows[0] });
 });
 
-// ── Convenience: set grade by student name + subject ─────────────────────────
 // PATCH /grades/by-name
-app.patch("/grades/by-name", (req, res) => {
+app.patch("/grades/by-name", async (req, res) => {
   const { studentName, subject, grade } = req.body;
   if (!studentName || !subject || grade === undefined)
     return badRequest(res, "studentName, subject and grade are required");
 
-  const student = students.find(
-    (s) => s.name.toLowerCase() === studentName.toLowerCase()
+  const [students] = await pool.query(
+    "SELECT * FROM students WHERE LOWER(name) = LOWER(?)", [studentName]
   );
-  if (!student) return notFound(res, `Student '${studentName}' not found`);
+  if (!students.length) return notFound(res, `Student '${studentName}' not found`);
+  const student = students[0];
 
-  const idx = grades.findIndex(
-    (g) =>
-      g.studentId === student.id &&
-      g.subject.toLowerCase() === subject.toLowerCase()
+  const [existing] = await pool.query(
+    "SELECT * FROM grades WHERE student_id = ? AND LOWER(subject) = LOWER(?)",
+    [student.id, subject]
   );
 
-  if (idx !== -1) {
-    // update existing
-    grades[idx] = { ...grades[idx], grade: Number(grade) };
-    return res.json({ action: "updated", grade: grades[idx] });
+  if (existing.length) {
+    await pool.query("UPDATE grades SET grade = ? WHERE id = ?", [grade, existing[0].id]);
+    const [updated] = await pool.query("SELECT * FROM grades WHERE id = ?", [existing[0].id]);
+    return res.json({ action: "updated", grade: updated[0] });
   } else {
-    // create new
-    const newGrade = {
-      id: nextGradeId++,
-      studentId: student.id,
-      subject,
-      grade: Number(grade),
-    };
-    grades.push(newGrade);
-    return res.status(201).json({ action: "created", grade: newGrade });
+    const [result] = await pool.query(
+      "INSERT INTO grades (student_id, subject, grade) VALUES (?, ?, ?)",
+      [student.id, subject, grade]
+    );
+    return res.status(201).json({
+      action: "created",
+      grade: { id: result.insertId, student_id: student.id, subject, grade: Number(grade) },
+    });
   }
 });
 
